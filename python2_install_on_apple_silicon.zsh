@@ -1,6 +1,6 @@
 #! /bin/zsh
 
-PYTHON_PREFIX=/usr/local/python27-arm64-ver2
+PYTHON_PREFIX=/usr/local/python27-arm64
 EXTRA_CONFIG_OPTIONS="--prefix=$PYTHON_PREFIX --enable-optimizations --with-universal-archs=arm64 --host=aarch64-apple-darwin --build=aarch64-apple-darwin --with-system-ffi"
 
 USE_SHARED=0
