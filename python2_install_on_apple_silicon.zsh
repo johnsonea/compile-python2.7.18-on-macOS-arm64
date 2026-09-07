@@ -1,12 +1,101 @@
 #! /bin/zsh
+set -e
 
+# location in which python2 will be installed
 PYTHON_PREFIX=/usr/local/python27-arm64
-EXTRA_CONFIG_OPTIONS="--prefix=$PYTHON_PREFIX --enable-optimizations --with-universal-archs=arm64 --host=aarch64-apple-darwin --build=aarch64-apple-darwin --with-system-ffi"
+
+# build directory
+TMP=/tmp/python2_build
+
+# options
+FAST=
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --prefix=*)
+            PYTHON_PREFIX=${1/--prefix=/}
+            shift
+            ;;
+        --tmp=*)
+            TMP=${1/--tmp=/}
+            shift
+            ;;
+        --fast)
+            FAST=1
+            shift
+            ;;
+        -h|--help)
+            me=$(basename $0)
+            echo "Usage: $me [-h | --help] [--prefix=PREFIX] [--tmp=TMP] [--fast]"
+            echo "       --prefix=PREFIX  python2 install directory (default: $PYTHON_PREFIX)"
+            echo "       --tmp=TMP        temporary build directory (default: $TMP)"
+            echo "       --fast           skip running slow tests (default: run all tests)"
+            echo "                        (slow tests can take ~6hrs; fast about 9mins)"
+            echo "       -h, --help       display this help and exit"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# create a build directory
+mkdir -p $TMP
+cd $TMP
+
+# install zlib if needed
+install_zlib () {
+    local URL=https://zlib.net/current/zlib.tar.gz
+    local F=$(basename $URL)
+    echo "installing zlib from $URL ..."
+    curl -L -o $F $URL
+    tar zxf $F
+    pushd zlib-*/.
+    ./configure
+    make
+    make check
+    echo sudo make install
+    popd
+    echo 'done installing zlib'; echo '--------------------------------'
+}
+zlib_installed () {
+    [[ $(/bin/ls -1 /usr/local/lib/libz.*(N) | wc | awk '{print $1}') -gt 0 ]]
+}
+zlib_installed || install_zlib
+
+# install obsolete OpenSSL 1.1.1 (where it will not contaminate other builds)
+export OPENSSL111=/usr/local/obsolete/openssl111
+install_openssl111 () {
+    local URL=https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz
+    local F=$(basename $URL)
+    echo "installing OpenSSL 1.1.1 from $URL in $OPENSSL111 ..."
+    [[ -d $OPENSSL111 ]] || sudo mkdir -p $OPENSSL111
+    curl -L -o $F $URL
+    tar zxf $F
+    pushd openssl-*/.
+    ./config --prefix=$OPENSSL111 --openssldir=$OPENSSL111 shared zlib
+    make
+    make test
+    echo sudo make install
+    for f in libcrypto.1.1.dylib libssl.1.1.dylib; do
+        echo sudo install_name_tool -id $OPENSSL111/lib/$f $OPENSSL111/lib/$f
+    done
+    echo sudo install_name_tool -change $OPENSSL111/libcrypto.1.1.dylib $OPENSSL111/lib/libcrypto.1.1.dylib $OPENSSL111/lib/libssl.1.1.dylib
+    popd
+    echo 'done installing OpenSSL 1.1.1'; echo '--------------------------------'
+}
+[[ -d $OPENSSL111 ]] || install_openssl111
+
+
+# now the python2 install
+
+EXTRA_CONFIG_OPTIONS=(--prefix=$PYTHON_PREFIX --enable-optimizations --with-universal-archs=arm64 --host=aarch64-apple-darwin --build=aarch64-apple-darwin --with-system-ffi)
 
 USE_SHARED=0
 if [[ $USE_SHARED -eq 1 ]]; then
-	EXTRA_CONFIG_OPTIONS="$EXTRA_CONFIG_OPTIONS --enable-shared"
-	export DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}$PWD"
+    EXTRA_CONFIG_OPTIONS+=--enable-shared
+    export DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:+${DYLD_LIBRARY_PATH}:}$PWD"
 fi
 
 export SDKPATH=$(xcrun --show-sdk-path)
@@ -17,57 +106,75 @@ export MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1-2)
 # the following is so that it finds the obsolete openssl111 libraries & headers
 export CPPFLAGS="$CPPFLAGS -I$OPENSSL111/include"
 export LDFLAGS="$LDFLAGS -L$OPENSSL111/lib"
-EXTRA_CONFIG_OPTIONS="$EXTRA_CONFIG_OPTIONS CPPFLAGS='$CPPFLAGS' LDFLAGS='$LDFLAGS' PYTHON_CPPFLAGS='$CPPFLAGS' PYTHON_LDFLAGS='$LDFLAGS'"
+EXTRA_CONFIG_OPTIONS+=(CPPFLAGS=$CPPFLAGS LDFLAGS=$LDFLAGS PYTHON_CPPFLAGS=$CPPFLAGS PYTHON_LDFLAGS=$LDFLAGS)
 
 # set up tests to skip
 SKIP_TESTS=
-	# skip tests related to ancient/dead OSs (IRIX, SGI)
-	SKIP_TESTS="test_al test_cd test_cl test_gl test_imgfile test_imageop $SKIP_TESTS"
-	# skip tests for Windows
-	SKIP_TESTS="test_msilib test_startfile test_winreg test_winsound $SKIP_TESTS"
-	# skip tests for Linux
-	SKIP_TESTS="test_epoll test_ossaudiodev test_linuxaudiodev $SKIP_TESTS"
-	# skip tests for SunOS/Solaris
-	SKIP_TESTS="test_sunaudiodev $SKIP_TESTS"
-	# skip tests for old database programs
-	SKIP_TESTS="test_bsddb test_bsddb3 test_gdbm $SKIP_TESTS"
-	# skip tests for GNU debugger and Shadow Password Database (not used on macOS)
-	SKIP_TESTS="test_gdb test_spwd $SKIP_TESTS"
-	# skip tests for old predecessor to ctypes
-	SKIP_TESTS="test_dl $SKIP_TESTS"
+    # skip tests related to ancient/dead OSs (IRIX, SGI)
+    SKIP_TESTS="test_al test_cd test_cl test_gl test_imgfile test_imageop $SKIP_TESTS"
+    # skip tests for Windows
+    SKIP_TESTS="test_msilib test_startfile test_winreg test_winsound $SKIP_TESTS"
+    # skip tests for Linux
+    SKIP_TESTS="test_epoll test_ossaudiodev test_linuxaudiodev $SKIP_TESTS"
+    # skip tests for SunOS/Solaris
+    SKIP_TESTS="test_sunaudiodev $SKIP_TESTS"
+    # skip tests for old database programs
+    SKIP_TESTS="test_bsddb test_bsddb3 test_gdbm $SKIP_TESTS"
+    # skip tests for GNU debugger and Shadow Password Database (not used on macOS)
+    SKIP_TESTS="test_gdb test_spwd $SKIP_TESTS"
+    # skip tests for old predecessor to ctypes
+    SKIP_TESTS="test_dl $SKIP_TESTS"
 
 # make some tests optional
 OPTIONALTESTOPTS=
-	# test large files
-	TEST_LARGE_FILES=1
-    [[ $TEST_LARGE_FILES -eq 1 ]] || OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u largefile -u extralargefile"
-	
-	# only test if we allow urlfetch
-	TEST_ALLOWING_URLFETCH=1
-	if [[ $TEST_ALLOWING_URLFETCH -eq 1 ]]; then
-		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u urlfetch"
-	else
-		SKIP_TESTS="test_codecmaps_hk test_codecmaps_jp test_codecmaps_kr test_codecmaps_tw test_codecs $test_codecmaps_hk"
-	fi
-	
-	# test big memory (these tests can take a LONG time, ~6hrs on an m3 max)
-	TEST_BIG_MEMORY=1
-	if [[ $TEST_BIG_MEMORY -eq 1 ]]; then
-		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 56G"
-	else
-		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 8G"
-	fi
+    # test large files
+    TEST_LARGE_FILES=1
+    [[ $FAST ]] && TEST_LARGE_FILES=0
+    [[ $TEST_LARGE_FILES -eq 1 ]] && OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u largefile -u extralargefile"
+    
+    # only test if we allow urlfetch
+    TEST_ALLOWING_URLFETCH=1
+    if [[ $TEST_ALLOWING_URLFETCH -eq 1 ]]; then
+        OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u urlfetch"
+    else
+        SKIP_TESTS="test_codecmaps_hk test_codecmaps_jp test_codecmaps_kr test_codecmaps_tw test_codecs $test_codecmaps_hk"
+    fi
+    
+    # test big memory (these tests can take a LONG time, ~6hrs on an m3 max)
+    TEST_BIG_MEMORY=1
+    [[ $FAST ]] && TEST_BIG_MEMORY=0
+    if [[ $TEST_BIG_MEMORY -eq 1 ]]; then
+        OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 56G"
+    else
+        OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 8G"
+        SKIP_TESTS="$SKIP_TESTS test_bigmem"
+    fi
 
-export EXTRA_TEST_OPTIONS="-u network -u curses $OPTIONALTESTOPTS -x $SKIP_TESTS"
+    # test slow tests
+    TEST_SLOW_TESTS=1
+    [[ $FAST ]] && TEST_SLOW_TESTS=0
+    if [[ $TEST_SLOW_TESTS -ne 1 ]]; then
+        SKIP_TESTS="$SKIP_TESTS test_StringIO test_bigmem test_bz2 test_hashlib test_re test_signal test_subprocess test_zipfile64"
+    fi
 
 # download the source
-BUILD_DIR=/tmp/python2src
-mkdir -p $BUILD_DIR
-cd $BUILD_DIR
 VER=2.7.18
 VERSION=Python-$VER
-curl -L -o - https://www.python.org/ftp/python/$VER/$VERSION.tgz | tar zxf -
-cd $VERSION
+URL=https://www.python.org/ftp/python/$VER/$VERSION.tgz
+F=$(basename $URL)
+echo "downloading $VERSION from $URL ..."
+curl -L -o $F $URL
+tar zxf $F
+pushd $VERSION
+
+if xattr . | grep -q .; then
+    NEW_SKIP_TESTS="test_distutils test_shutil"
+    SKIP_TESTS="$SKIP_TESTS $NEW_SKIP_TESTS"
+    echo "NOTE: skipping some tests ($NEW_SKIP_TESTS) because the build directory ${PWD} has extended attributes:"
+    xattr . | sed 's/^/    /'
+    unset NEW_SKIP_TESTS
+fi
+EXTRA_TEST_OPTIONS="-u network -u curses $OPTIONALTESTOPTS -x $SKIP_TESTS"
 
 # create the patch
 b64decode <<END
@@ -221,20 +328,28 @@ gunzip arm64.patch.gz
 patch -p0 < arm64.patch
 
 # create the destination
-sudo mkdir -p $PYTHON_PREFIX
+echo sudo mkdir -p $PYTHON_PREFIX
 
 # now make it
 nWorkers=$(sysctl -n hw.ncpu | perl -ple '$_=int(0.8*$_-0.5)')
-./configure $=EXTRA_CONFIG_OPTIONS --enable-optimizations \
-&& make -k -j$nWorkers test "TESTOPTS=$EXTRA_TEST_OPTIONS" \
-&& sudo make -k -j$nWorkers install \
-&& sudo "$PYTHON_PREFIX/bin/python2" -m ensurepip --upgrade
+echo "configuring $VERSION build ..."
+cmd=(./configure $EXTRA_CONFIG_OPTIONS --enable-optimizations); echo $cmd; $cmd
+echo "compiling $VERSION ..."
+cmd=(make -k -j$nWorkers test "TESTOPTS=$EXTRA_TEST_OPTIONS"); echo $cmd; $cmd
+echo "installing $VERSION ..."
+cmd=(echo sudo make -k -j$nWorkers install); echo $cmd; $cmd
 
-# add it to the path
-echo "$PYTHON_PREFIX/bin" | sudo /usr/bin/tee /etc/paths.d/python2
+# upgrade pip2
+echo "finalizing $VERSION ..."
+echo sudo "$PYTHON_PREFIX/bin/python2" -m ensurepip --upgrade
+
+# add python2 bin directory to the path
+echo "$PYTHON_PREFIX/bin" | echo sudo /usr/bin/tee /etc/paths.d/python2
 
 # install certificates
 CERTCMD=Mac/BuildScript/resources/install_certificates.command
 SUFFIX=.orig; [[ -f $CERTCMD$SUFFIX ]] && SUFFIX=
 perl -i$SUFFIX -ple 's#/Library/Frameworks/Python.framework/Versions/\@PYVER\@/bin/python\@PYVER\@#'$PYTHON_PREFIX'/bin/python2#' $CERTCMD
-sudo $CERTCMD
+echo sudo $CERTCMD
+
+echo "done installing $VERSION"
