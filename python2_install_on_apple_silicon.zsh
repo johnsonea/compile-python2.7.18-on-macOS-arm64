@@ -14,6 +14,11 @@ export CFLAGS="-arch arm64 -isysroot $SDKPATH -I$SDKPATH/usr/include/ffi"
 export LDFLAGS="-arch arm64 -isysroot $SDKPATH -lffi"
 export MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productVersion | cut -d. -f1-2)
 
+# the following is so that it finds the obsolete openssl111 libraries & headers
+export CPPFLAGS="$CPPFLAGS -I$OPENSSL111/include"
+export LDFLAGS="$LDFLAGS -L$OPENSSL111/lib"
+EXTRA_CONFIG_OPTIONS="$EXTRA_CONFIG_OPTIONS CPPFLAGS='$CPPFLAGS' LDFLAGS='$LDFLAGS' PYTHON_CPPFLAGS='$CPPFLAGS' PYTHON_LDFLAGS='$LDFLAGS'"
+
 # set up tests to skip
 SKIP_TESTS=
 	# skip tests related to ancient/dead OSs (IRIX, SGI)
@@ -35,24 +40,23 @@ SKIP_TESTS=
 OPTIONALTESTOPTS=
 	# test large files
 	TEST_LARGE_FILES=1
-	[ $TEST_LARGE_FILES -eq 1 ] && OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u largefile -u extralargefile"
+    [[ $TEST_LARGE_FILES -eq 1 ]] || OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u largefile -u extralargefile"
 	
 	# only test if we allow urlfetch
 	TEST_ALLOWING_URLFETCH=1
-	if [ $TEST_ALLOWING_URLFETCH -eq 1 ]; then
+	if [[ $TEST_ALLOWING_URLFETCH -eq 1 ]]; then
 		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -u urlfetch"
 	else
 		SKIP_TESTS="test_codecmaps_hk test_codecmaps_jp test_codecmaps_kr test_codecmaps_tw test_codecs $test_codecmaps_hk"
 	fi
 	
-	# test big memory
+	# test big memory (these tests can take a LONG time, ~6hrs on an m3 max)
 	TEST_BIG_MEMORY=1
-	if [ $TEST_BIG_MEMORY -eq 1 ]; then
+	if [[ $TEST_BIG_MEMORY -eq 1 ]]; then
 		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 56G"
 	else
 		OPTIONALTESTOPTS="$OPTIONALTESTOPTS -M 8G"
 	fi
-
 
 export EXTRA_TEST_OPTIONS="-u network -u curses $OPTIONALTESTOPTS -x $SKIP_TESTS"
 
@@ -220,5 +224,17 @@ patch -p0 < arm64.patch
 sudo mkdir -p $PYTHON_PREFIX
 
 # now make it
-./configure $=EXTRA_CONFIG_OPTIONS --enable-optimizations && make -k -j12 test "TESTOPTS=$EXTRA_TEST_OPTIONS" && sudo make install && sudo "$PYTHON_PREFIX/bin/python2" -m ensurepip --upgrade
+nWorkers=$(sysctl -n hw.ncpu | perl -ple '$_=int(0.8*$_-0.5)')
+./configure $=EXTRA_CONFIG_OPTIONS --enable-optimizations \
+&& make -k -j$nWorkers test "TESTOPTS=$EXTRA_TEST_OPTIONS" \
+&& sudo make -k -j$nWorkers install \
+&& sudo "$PYTHON_PREFIX/bin/python2" -m ensurepip --upgrade
 
+# add it to the path
+echo "$PYTHON_PREFIX/bin" | sudo /usr/bin/tee /etc/paths.d/python2
+
+# install certificates
+CERTCMD=Mac/BuildScript/resources/install_certificates.command
+SUFFIX=.orig; [[ -f $CERTCMD$SUFFIX ]] && SUFFIX=
+perl -i$SUFFIX -ple 's#/Library/Frameworks/Python.framework/Versions/\@PYVER\@/bin/python\@PYVER\@#'$PYTHON_PREFIX'/bin/python2#' $CERTCMD
+sudo $CERTCMD
