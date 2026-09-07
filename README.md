@@ -17,7 +17,7 @@ Note that, before installing python2 from source, you must have zlib and OpenSSL
 
 2. OpenSSL 1.1.1 installed (where it will not contaminate other builds) like:
     
-       OPENSSL111=/usr/local/obsolete/openssl111
+       export OPENSSL111=/usr/local/obsolete/openssl111
        URL=https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz
        [ -d $OPENSSL111 ] || sudo mkdir -p $OPENSSL111
        curl -L -o - $URL | tar zxf -
